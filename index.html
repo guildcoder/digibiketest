@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Digibike Royale</title>
+<style>
+html,body{margin:0;padding:0;overflow:hidden;height:100%;background:black;font-family:sans-serif;}
+canvas{display:block;}
+#menu{
+  position:absolute;top:0;left:0;width:100%;height:100%;
+  display:flex;flex-direction:column;justify-content:center;align-items:center;
+  background: rgba(0,0,0,0.85); z-index:10;color:white;
+}
+#menu input,#menu select,#menu button{margin:5px;padding:10px;font-size:16px;}
+#title{font-size:48px;color:cyan;font-weight:bold;animation:bob 1.5s infinite alternate;}
+@keyframes bob{0%{transform:translateY(0px);}100%{transform:translateY(20px);}}
+#hud{position:absolute;top:10px;left:10px;color:white;font-weight:bold;font-size:20px;z-index:5;}
+#instructions{display:none;text-align:center;background:rgba(0,0,0,0.9);padding:20px;margin-top:10px;border-radius:10px;}
+#spectateMenu{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.85);padding:20px;border-radius:10px;color:white;display:none;z-index:20;text-align:center;}
+#spectateMenu button{padding:10px;font-size:18px;margin-top:10px;}
+</style>
+</head>
+<body>
+<div id="menu">
+<div id="title">Digibike Royale</div>
+<input id="playerName" placeholder="Enter your name" maxlength="12"/>
+<select id="bikeColor">
+<option value="cyan">Cyan</option>
+<option value="magenta">Magenta</option>
+<option value="yellow">Yellow</option>
+<option value="lime">Lime</option>
+<option value="blue">Blue</option>
+<option value="red">Red</option>
+<option value="green">Green</option>
+</select>
+<button id="startBtn">Let's race!</button>
+<button id="showInstructions">Controls & Instructions</button>
+<div id="instructions">
+<p>WASD: Move</p>
+<p>Space: Throw light disc (requires ammo from discs)</p>
+<p>Shift: Pause</p>
+<p>M: Expand mini-map while held</p>
+<p>Collect white discs to gain ammo.</p>
+</div>
+</div>
+
+<div id="spectateMenu">
+<h2>Spectating...</h2>
+<button id="backToMenu">Back to Main Menu</button>
+</div>
+
+<div id="hud"></div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas=document.getElementById('gameCanvas');
+const ctx=canvas.getContext('2d');
+let width=canvas.width=window.innerWidth;
+let height=canvas.height=window.innerHeight;
+const hud=document.getElementById('hud');
+const spectateMenu=document.getElementById('spectateMenu');
+
+let gameRunning=false, paused=false, miniMapExpanded=false;
+const PLAYER_SPEED=2, BOT_COUNT=20, TRAIL_LENGTH=50, DISC_COUNT=10;
+
+let storm={x:0,y:0,w:width,h:height,shrinkTimer:0,shrinkCooldown:30000,shrinkDuration:5000,moving:false,startX:0,startY:0,endX:0,endY:0,moveProgress:0};
+
+let camera={x:0,y:0};
+const tronNames=["BitCrusher","LightSpinner","GridGhost","NeonKnight","SparkWraith","ByteRider","PhotonPunk","LaserLad","Glowtron","CircuitCreeper","FlashFury","DataDash","TurboByte","PixelPhantom","ZapZebra","NeonNarwhal","QuantumQuill","ElectroElf","VaporViper","GlitchGoblin"];
+const bikeColors=["cyan","magenta","yellow","lime","blue","red","green"];
+let player,bots=[],discs=[],projectiles=[],particles=[],spectating=null;
+
+class Bike{
+  constructor(x,y,color,name,isBot=false){
+    this.x=x;this.y=y;this.color=color;this.name=name;this.isBot=isBot;
+    this.dir='right';this.trail=[];this.alive=true;this.ammo=0;
+    this.decisionTimer=Math.random()*1000+500;this.lastDecision=0;this.target=null;
+    this.killer=null;
+  }
+  move(delta){
+    if(!this.alive) return;
+    if(this.isBot) this.aiMove(delta);
+    if(this.dir==='up') this.y-=PLAYER_SPEED;
+    if(this.dir==='down') this.y+=PLAYER_SPEED;
+    if(this.dir==='left') this.x-=PLAYER_SPEED;
+    if(this.dir==='right') this.x+=PLAYER_SPEED;
+    this.trail.push({x:this.x,y:this.y});
+    if(this.trail.length>TRAIL_LENGTH) this.trail.shift();
+  }
+  aiMove(delta){
+    this.lastDecision+=delta;
+    if(!this.target || !this.target.alive){
+      let possible=[player,...bots.filter(b=>b!==this && b.alive)];
+      if(possible.length>0) this.target=possible[Math.floor(Math.random()*possible.length)];
+    }
+    if(this.lastDecision>this.decisionTimer){
+      this.lastDecision=0; this.decisionTimer=500+Math.random()*1000;
+      if(!this.target) return;
+      let safeDirs=['up','down','left','right'].filter(d=>{
+        let nx=this.x+(d==='left'?-PLAYER_SPEED:d==='right'?PLAYER_SPEED:0);
+        let ny=this.y+(d==='up'?-PLAYER_SPEED:d==='down'?PLAYER_SPEED:0);
+        if(nx<storm.x||nx>storm.x+storm.w||ny<storm.y||ny>storm.y+storm.h) return false;
+        let danger=false;
+        [player,...bots].forEach(b=>{b.trail.forEach(t=>{if(Math.abs(nx-t.x)<5 && Math.abs(ny-t.y)<5) danger=true;});});
+        projectiles.forEach(p=>{if(Math.abs(nx-p.x)<10 && Math.abs(ny-p.y)<10) danger=true;});
+        return !danger;
+      });
+      if(safeDirs.length>0){
+        let dx=this.target.x-this.x, dy=this.target.y-this.y;
+        let preferred=(Math.abs(dx)>Math.abs(dy))?(dx>0?'right':'left'):(dy>0?'down':'up');
+        this.dir=safeDirs.includes(preferred)?preferred:safeDirs[Math.floor(Math.random()*safeDirs.length)];
+      }
+    }
+  }
+  draw(){
+    if(!this.alive) return;
+    ctx.fillStyle=this.color; ctx.fillRect(this.x-camera.x-5,this.y-camera.y-5,10,10);
+    this.trail.forEach(t=>ctx.fillRect(t.x-camera.x-2,t.y-camera.y-2,4,4));
+    ctx.fillStyle='white'; ctx.font='16px Arial';
+    ctx.fillText(this.name,this.x-camera.x-ctx.measureText(this.name).width/2,this.y-camera.y-10);
+  }
+}
+
+class Disc{constructor(){this.x=Math.random()*width; this.y=Math.random()*height; this.radius=8;}
+draw(){ctx.fillStyle='white';ctx.beginPath();ctx.arc(this.x-camera.x,this.y-camera.y,this.radius,0,Math.PI*2);ctx.fill();}}
+
+class Projectile{constructor(x,y,dir,color){this.x=x;this.y=y;this.dir=dir;this.color=color;this.alive=true;}
+update(){if(this.dir==='up') this.y-=5;if(this.dir==='down') this.y+=5;if(this.dir==='left') this.x-=5;if(this.dir==='right') this.x+=5;
+if(this.x<0||this.x>width||this.y<0||this.y>height)this.alive=false;}
+draw(){ctx.fillStyle=this.color;ctx.beginPath();ctx.arc(this.x-camera.x,this.y-camera.y,5,0,Math.PI*2);ctx.fill();}}
+
+const keys={w:false,a:false,s:false,d:false,shift:false,space:false,m:false};
+document.addEventListener('keydown',e=>{if(e.key==='w') keys.w=true;if(e.key==='a') keys.a=true;if(e.key==='s') keys.s=true;if(e.key==='d') keys.d=true;if(e.key==='Shift') keys.shift=true;if(e.key===' ') keys.space=true;if(e.key==='m') keys.m=true;});
+document.addEventListener('keyup',e=>{if(e.key==='w') keys.w=false;if(e.key==='a') keys.a=false;if(e.key==='s') keys.s=false;if(e.key==='d') keys.d=false;if(e.key==='Shift') keys.shift=false;if(e.key===' ') keys.space=false;if(e.key==='m') keys.m=false;});
+
+document.getElementById('showInstructions').onclick=()=>{const inst=document.getElementById('instructions');inst.style.display = inst.style.display==='none'?'block':'none';};
+document.getElementById('startBtn').onclick=()=>{startGame();document.getElementById('menu').style.display='none';};
+document.getElementById('backToMenu').onclick=()=>{gameRunning=false;spectating=null;spectateMenu.style.display='none';document.getElementById('menu').style.display='flex';};
+
+function startGame(){
+  gameRunning=true; spectating=null;
+  player=new Bike(Math.random()*width,Math.random()*height,document.getElementById('bikeColor').value,document.getElementById('playerName').value||'Player');
+  bots=[]; discs=[]; projectiles=[]; particles=[];
+  for(let i=0;i<BOT_COUNT;i++){
+    let name=tronNames[Math.floor(Math.random()*tronNames.length)];
+    let color=bikeColors[Math.floor(Math.random()*bikeColors.length)];
+    bots.push(new Bike(Math.random()*width,Math.random()*height,color,name,true));
+  }
+  for(let i=0;i<DISC_COUNT;i++) discs.push(new Disc());
+  storm={x:0,y:0,w:width,h:height,shrinkTimer:0,shrinkCooldown:30000,shrinkDuration:5000,moving:false,startX:0,startY:0,endX:0,endY:0,moveProgress:0};
+  lastTime=performance.now();
+  loop(lastTime);
+}
+
+let lastTime=0;
+function loop(timestamp){
+  if(!gameRunning) return;
+  let delta=timestamp-lastTime; lastTime=timestamp;
+  requestAnimationFrame(loop);
+  if(paused) return;
+  update(delta);
+  draw();
+}
+
+function createParticles(x, y, color) {
+    for (let i = 0; i < 40; i++) {
+        let angle = Math.random() * Math.PI * 2;
+        let speed = Math.random() * 4 + 1;
+        let vx = Math.cos(angle) * speed;
+        let vy = Math.sin(angle) * speed;
+        let life = 30 + Math.random() * 30;
+        particles.push({x, y, vx, vy, life, color});
+    }
+}
+
+function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx; p.y += p.vy;
+        p.vx *= 0.95; p.vy *= 0.95;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+}
+
+function drawParticles() {
+    particles.forEach(p => {
+        let alpha = Math.max(p.life / 60, 0);
+        ctx.fillStyle = `rgba(${hexToRgb(p.color)},${alpha})`;
+        ctx.fillRect(p.x - camera.x, p.y - camera.y, 3, 3);
+    });
+}
+
+function hexToRgb(color) {
+    const colors = {
+        cyan: '0,255,255',
+        magenta: '255,0,255',
+        yellow: '255,255,0',
+        lime: '0,255,0',
+        blue: '0,0,255',
+        red: '255,0,0',
+        green: '0,128,0'
+    };
+    return colors[color] || '255,255,255';
+}
+
+function startSpectating(bike){spectating=bike;spectateMenu.style.display='block';}
+
+window.addEventListener('resize',()=>{width=canvas.width=window.innerWidth;height=canvas.height=window.innerHeight;});
+</script>
+</body>
+</html>
