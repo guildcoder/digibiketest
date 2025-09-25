@@ -61,58 +61,74 @@ let height=canvas.height=window.innerHeight;
 const hud=document.getElementById('hud');
 
 let gameRunning=false;
-const PLAYER_SPEED=4, BOT_SPEED=3, DISC_COUNT=10;
+const PLAYER_SPEED=5, BOT_BASE_SPEED=3;
+let distance=0,score=0;
 
-let player,bots=[],discs=[],projectiles=[],particles=[];
-let round=1,roundTimer=0,nextRoundDelay=2000;
+let player,bots=[],discs=[],projectiles=[],obstacles=[],trails=[];
+let round=1,roundTimer=0,nextRoundDelay=3000;
 
 class Bike{
   constructor(x,y,color,name,isBot=false){
     this.x=x;this.y=y;this.color=color;this.name=name;this.isBot=isBot;
-    this.alive=true;this.ammo=0;this.dir='forward';
+    this.alive=true;this.ammo=0;this.trail=[];
   }
   move(delta){
     if(!this.alive)return;
-    if(this.isBot){
-      // Bots chase player
-      if(player){
-        if(this.y>player.y) this.y-=BOT_SPEED;
-        if(this.x<player.x) this.x+=BOT_SPEED*0.5;
-        if(this.x>player.x) this.x-=BOT_SPEED*0.5;
-      }
-    }else{
+    // Player input
+    if(!this.isBot){
       if(keys.w) this.y-=PLAYER_SPEED;
       if(keys.s) this.y+=PLAYER_SPEED;
       if(keys.a) this.x-=PLAYER_SPEED;
       if(keys.d) this.x+=PLAYER_SPEED;
+    }else{
+      // Bot AI: chase player aggressively
+      if(player){
+        let dx=player.x-this.x,dy=player.y-this.y;
+        let speed=BOT_BASE_SPEED+distance/500;
+        this.x+=Math.sign(dx)*Math.min(Math.abs(dx),speed*0.5);
+        this.y+=Math.sign(dy)*Math.min(Math.abs(dy),speed);
+      }
     }
+    // Leave trail
+    this.trail.push({x:this.x,y:this.y});
+    if(this.trail.length>100) this.trail.shift();
+    trails.push({x:this.x,y:this.y,color:this.color});
+    if(trails.length>1000) trails.shift();
   }
   draw(){
     if(!this.alive)return;
-    ctx.shadowBlur=15; ctx.shadowColor=this.color;
+    ctx.shadowBlur=12;ctx.shadowColor=this.color;
     ctx.fillStyle=this.color;
-    ctx.fillRect(this.x-15,this.y-30,30,60);
+    // Tilt effect
+    let tiltX=(this.x-width/2)/width*20;
+    ctx.fillRect(this.x-15-tiltX,this.y-30,30,60);
     ctx.shadowBlur=0;
   }
 }
 
 class Disc{
-  constructor(){this.x=Math.random()*width; this.y=player.y-Math.random()*500-200; this.radius=8;}
+  constructor(){this.x=Math.random()*width; this.y=player.y-Math.random()*600-200; this.radius=8;}
   draw(){ctx.shadowBlur=10;ctx.shadowColor='white';ctx.fillStyle='white';ctx.beginPath();ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;}
+}
+
+class Obstacle{
+  constructor(){this.x=Math.random()*width; this.y=player.y-Math.random()*1000-300; this.w=50; this.h=50;}
+  draw(){ctx.fillStyle='red';ctx.fillRect(this.x,this.y,this.w,this.h);}
 }
 
 class Projectile{
   constructor(x,y,color){this.x=x;this.y=y;this.color=color;this.alive=true;}
-  update(){this.y-=10;if(this.y<0)this.alive=false;}
+  update(){this.y-=10;if(this.y<player.y-1000)this.alive=false;}
   draw(){ctx.shadowBlur=12;ctx.shadowColor=this.color;ctx.fillStyle=this.color;ctx.beginPath();ctx.arc(this.x,this.y,6,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;}
 }
 
 function startGame(name,color){
   gameRunning=true;
   player=new Bike(width/2,height-100,color,name);
-  bots=[];discs=[];projectiles=[];particles=[];
-  round=1;roundTimer=0;
-  for(let i=0;i<DISC_COUNT;i++)discs.push(new Disc());
+  bots=[];discs=[];projectiles=[];obstacles=[];trails=[];
+  distance=0;score=0;round=1;roundTimer=0;
+  for(let i=0;i<10;i++) discs.push(new Disc());
+  for(let i=0;i<10;i++) obstacles.push(new Obstacle());
   loop();
 }
 
@@ -125,15 +141,15 @@ function nextRound(){
 }
 
 function update(delta){
-  if(player && player.alive) player.move(delta);
+  if(!player.alive)return;
+  player.move(delta);
   bots.forEach(b=>b.move(delta));
 
   // Collect discs
   discs.forEach((d,i)=>{
-    if(player && Math.abs(player.x-d.x)<20 && Math.abs(player.y-d.y)<20){
+    if(Math.abs(player.x-d.x)<20 && Math.abs(player.y-d.y)<20){
       player.ammo++;
-      discs.splice(i,1);
-      discs.push(new Disc());
+      discs.splice(i,1); discs.push(new Disc());
     }
   });
 
@@ -141,7 +157,7 @@ function update(delta){
   if(keys.space && player.ammo>0){
     projectiles.push(new Projectile(player.x,player.y-40,player.color));
     player.ammo--;
-    keys.space=false; // one shot per press
+    keys.space=false;
   }
 
   // Update projectiles
@@ -151,6 +167,7 @@ function update(delta){
     bots.forEach(b=>{
       if(b.alive && Math.abs(p.x-b.x)<20 && Math.abs(p.y-b.y)<40){
         b.alive=false;
+        score+=50;
       }
     });
   });
@@ -162,33 +179,49 @@ function update(delta){
     }
   });
 
+  // Player hitting obstacles
+  obstacles.forEach(o=>{
+    if(player.x+15>o.x && player.x-15<o.x+o.w && player.y+30>o.y && player.y-30<o.y+o.h){
+      player.alive=false;
+    }
+  });
+
   // Round system
   roundTimer+=delta;
-  if(roundTimer>nextRoundDelay){
-    roundTimer=0;
-    nextRound();
-  }
+  if(roundTimer>nextRoundDelay){roundTimer=0;nextRound();}
+
+  // Increase score by distance
+  distance+=PLAYER_SPEED;
+  score=Math.floor(distance/10);
 }
 
 function draw(){
   ctx.clearRect(0,0,width,height);
 
-  // Floor
+  // Draw pseudo-3D floor
   ctx.fillStyle='rgba(0,255,255,0.05)';
   ctx.fillRect(0,0,width,height);
 
+  // Draw trails
+  trails.forEach(t=>{
+    ctx.fillStyle=t.color;
+    ctx.fillRect(t.x-2,t.y-2,4,4);
+  });
+
   discs.forEach(d=>d.draw());
+  obstacles.forEach(o=>o.draw());
   projectiles.forEach(p=>p.draw());
   if(player) player.draw();
   bots.forEach(b=>b.draw());
 
-  hud.innerText=`Round: ${round} | Ammo: ${player?player.ammo:0}`;
+  hud.innerText=`Score: ${score} | Ammo: ${player?player.ammo:0}`;
 }
 
 function loop(timestamp){
   if(!gameRunning) return;
   requestAnimationFrame(loop);
-  update(16);draw();
+  update(16);
+  draw();
 }
 
 const keys={w:false,a:false,s:false,d:false,space:false};
@@ -215,7 +248,6 @@ startBtn.addEventListener('click',()=>{
 });
 
 const bikeColors=["cyan","magenta","yellow","lime","blue","red","green"];
-
 window.addEventListener('resize',()=>{width=canvas.width=window.innerWidth;height=canvas.height=window.innerHeight;});
 </script>
 </body>
